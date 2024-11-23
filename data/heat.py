@@ -97,6 +97,9 @@ f.create_dataset("soln", data=solns)
 
 
 # # Plot
+# print(x.shape)
+# print(np.array(t_list).shape)
+# print(np.array(u_list).shape)
 # plt.figure(figsize=(6, 4))
 # plt.pcolormesh(
 #     x.ravel(),
