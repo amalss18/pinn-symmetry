@@ -24,7 +24,7 @@ class DeepONet(nn.Module):
         super(DeepONet, self).__init__()
         self.branch_net = nn.Sequential(
             nn.Linear(branch_input_dim, hidden_dim),
-            nn.ReLU(),
+            nn.ELU(),
             *[
                 nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ELU())
                 for _ in range(layers - 1)
@@ -35,7 +35,7 @@ class DeepONet(nn.Module):
             nn.Linear(trunk_input_dim, hidden_dim),
             nn.ELU(),
             *[
-                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ReLU())
+                nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.ELU())
                 for _ in range(layers - 1)
             ],
             nn.Linear(hidden_dim, hidden_dim),
@@ -60,8 +60,6 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
     t_ic = torch.zeros((ic.shape[0], Ns), device=device)
 
     ic_s = ic_sampled.unsqueeze(2).repeat(1, 1, Ns).transpose(1, 2)
-    x_ic = x_ic.unsqueeze(2)
-    t_ic = t_ic.unsqueeze(2)
 
     ic_s = ic_s.reshape(B * Ns, -1)
     x_ic = x_ic.reshape(B * Ns, -1)
@@ -72,7 +70,7 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
     u_pred_ic = u_pred_ic.reshape(B, Ns)
 
     x_ic = x_ic.reshape(B, Ns)
-    u_actual_ic = ic[0, :][x_idx]
+    u_actual_ic = torch.gather(ic, dim=1, index=x_idx)
 
     # boundary condition
     Nb = 100
@@ -85,10 +83,6 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
     t_bc, t_idx = sample_ics(t, Nb)
     x_bc1 = torch.zeros((ic.shape[0], Nb), device=device)
     x_bc2 = torch.ones((ic.shape[0], Nb), device=device) * Lx
-
-    x_bc1 = x_bc1.unsqueeze(2)
-    x_bc2 = x_bc2.unsqueeze(2)
-    t_bc = t_bc.unsqueeze(2)
 
     ic_s = ic_s_bc.reshape(B * Nb, -1)
     x_bc1 = x_bc1.reshape(B * Nb, -1)
@@ -159,7 +153,7 @@ def sample_ics(input_tensor, N):
 def train(train_data, val_data, test_data, x_data, t_data):
     # Parameters
     mu = 0.01  # Diffusion coefficient
-    epochs = 2500
+    epochs = 5000
     lr = 1e-4
     branch_input_dim = 200  # For u0(x) - inputs sensor locations
     trunk_input_dim = 2  # For x, t
@@ -201,7 +195,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
         total_loss.backward()
         optimizer.step()
 
-        # validation
+        ################### validation #########################################
         model.eval()
 
         ic_data_val = val_data[:, 0, :]
@@ -232,7 +226,9 @@ def train(train_data, val_data, test_data, x_data, t_data):
     return model
 
 
-def make_plot(model, data, x, t, p_idxs=[0], dataset_name="train"):
+def make_plot(
+    model, data, x, t, p_idxs=[0], dataset_name="train", branch_input_dim=200
+):
     ic_data = data[:, 0, :]
     ic_data_sampled, _ = sample_ics(ic_data, branch_input_dim)
 
@@ -270,17 +266,6 @@ def make_plot(model, data, x, t, p_idxs=[0], dataset_name="train"):
         plt.clf()
 
 
-# plt.pcolormesh(
-#     x.ravel(),
-#     np.array(t_list),
-#     np.array(u_list),
-#     cmap="RdBu_r",
-#     shading="gouraud",
-#     rasterized=True,
-#     clim=(-0.8, 0.8),
-# )
-
-
 if __name__ == "__main__":
     dataset = (
         "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/heat_new.hdf5"
@@ -297,21 +282,21 @@ if __name__ == "__main__":
     val_data = soln_data[200:300]
     test_data = soln_data[300:500]
 
-    # model = train(train_data, val_data, test_data, x_data, t_data)
-    # torch.save(model.state_dict(), "models/test2.pt")
+    model = train(train_data, val_data, test_data, x_data, t_data)
+    torch.save(model.state_dict(), "models/test2.pt")
 
     ################################################################
-    branch_input_dim = 200  # For u0(x) - inputs sensor locations
-    trunk_input_dim = 2  # For x, t
-    model = DeepONet(branch_input_dim, trunk_input_dim)
-    model = model.to(device)
-
-    model.load_state_dict(torch.load("models/test2.pt", weights_only=True))
-
-    make_plot(
-        model, train_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="train"
-    )
-    make_plot(
-        model, test_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="test"
-    )
-    print("Done with plots!")
+    # branch_input_dim = 200  # For u0(x) - inputs sensor locations
+    # trunk_input_dim = 2  # For x, t
+    # model = DeepONet(branch_input_dim, trunk_input_dim)
+    # model = model.to(device)
+    #
+    # model.load_state_dict(torch.load("models/test2.pt", weights_only=True))
+    #
+    # make_plot(
+    #     model, train_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="train"
+    # )
+    # make_plot(
+    #     model, test_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="test"
+    # )
+    # print("Done with plots!")
