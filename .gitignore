@@ -3,3 +3,4 @@ data/dataset/*
 code/plots/*
 code/models/*
 code/wandb/*
+code/__pycache__/*

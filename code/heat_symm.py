@@ -6,18 +6,6 @@ import numpy as np
 import wandb
 import matplotlib.pyplot as plt
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-wandb.init(project="pinn-symmetry", entity="pinn-symmetry", mode="disabled")
-
-torch.manual_seed(42)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(42)
-    torch.cuda.manual_seed_all(42)
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
-
 
 class DeepONet(nn.Module):
     def __init__(self, branch_input_dim, trunk_input_dim, hidden_dim=100, layers=7):
@@ -160,49 +148,27 @@ def get_prolongation(zeta1, zeta2, phi1, x, t, u, mu):
     u_xxt = torch.autograd.grad(
         u_xx, t, grad_outputs=torch.ones_like(u_xx), create_graph=True
     )[0]
-    u_ttx = torch.autograd.grad(
-        u_tt, x, grad_outputs=torch.ones_like(u_tt), create_graph=True
-    )[0]
-    u_ttt = torch.autograd.grad(
-        u_tt, t, grad_outputs=torch.ones_like(u_tt), create_graph=True
-    )[0]
 
-    pde = u_t - u_xx
-    J_delta = torch.tensor(
-        [
-            torch.autograd.grad(
-                pde, x, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, t, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u_x, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u_t, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u_xx, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u_tx, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-            torch.autograd.grad(
-                pde, u_tt, grad_outputs=torch.ones_like(pde), create_graph=True
-            )[0],
-        ]
-    )
+    # J_delta = torch.tensor(
+    #     [
+    #         torch.autograd.grad(
+    #             pde, x, grad_outputs=torch.ones_like(pde), create_graph=True
+    #         )[0],
+    #         torch.autograd.grad(
+    #             pde, t, grad_outputs=torch.ones_like(pde), create_graph=True
+    #         )[0],
+    #         1.0,
+    #         mu,
+    #     ]
+    # )
 
     Q = phi1 - zeta1 * u_x - zeta2 * u_t
-    phi_x = (
-        torch.autograd.grad(Q, x, grad_outputs=torch.ones_like(Q), create_graph=True)[0]
-        + zeta1 * u_xx
-        + zeta2 * u_tx
-    )
+
+    # phi_x = (
+    #     torch.autograd.grad(Q, x, grad_outputs=torch.ones_like(Q), create_graph=True)[0]
+    #     + zeta1 * u_xx
+    #     + zeta2 * u_tx
+    # )
     phi_t = (
         torch.autograd.grad(Q, t, grad_outputs=torch.ones_like(Q), create_graph=True)[0]
         + zeta1 * u_tx
@@ -220,34 +186,35 @@ def get_prolongation(zeta1, zeta2, phi1, x, t, u, mu):
         + zeta1 * u_xxx
         + zeta2 * u_xxt
     )
-    phi_tx = (
-        torch.autograd.grad(
-            torch.autograd.grad(
-                Q, x, grad_outputs=torch.ones_like(Q), create_graph=True
-            )[0],
-            t,
-            grad_outputs=torch.ones_like(Q),
-            create_graph=True,
-        )[0]
-        + zeta1 * u_xxt
-        + zeta2 * u_ttx
-    )
-    phi_tt = (
-        torch.autograd.grad(
-            torch.autograd.grad(
-                Q, t, grad_outputs=torch.ones_like(Q), create_graph=True
-            )[0],
-            t,
-            grad_outputs=torch.ones_like(Q),
-            create_graph=True,
-        )[0]
-        + zeta1 * u_ttx
-        + zeta2 * u_ttt
-    )
+    # phi_tx = (
+    #     torch.autograd.grad(
+    #         torch.autograd.grad(
+    #             Q, x, grad_outputs=torch.ones_like(Q), create_graph=True
+    #         )[0],
+    #         t,
+    #         grad_outputs=torch.ones_like(Q),
+    #         create_graph=True,
+    #     )[0]
+    #     + zeta1 * u_xxt
+    #     + zeta2 * u_ttx
+    # )
+    # phi_tt = (
+    #     torch.autograd.grad(
+    #         torch.autograd.grad(
+    #             Q, t, grad_outputs=torch.ones_like(Q), create_graph=True
+    #         )[0],
+    #         t,
+    #         grad_outputs=torch.ones_like(Q),
+    #         create_graph=True,
+    #     )[0]
+    #     + zeta1 * u_ttx
+    #     + zeta2 * u_ttt
+    # )
 
-    coeffs = torch.tensor([zeta1, zeta2, phi1, phi_x, phi_t, phi_xx, phi_tx, phi_tt])
+    # coeffs = torch.tensor([zeta1, zeta2, phi1, phi_t, phi_xx])
 
-    return torch.dot(J_delta, coeffs)
+    # return torch.dot(J_delta, coeffs)
+    return phi_t - mu * phi_xx
 
 
 def symmtery_loss(model, ic, x, t, mu):
@@ -279,17 +246,17 @@ def symmtery_loss(model, ic, x, t, mu):
     phi1 = 0.0
     loss1 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
 
-    # Generator 2 - dt
+    # # Generator 2 - dt
     zeta1 = 0.0
     zeta2 = 1.0
     phi1 = 0.0
     loss2 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
 
-    # Generator 3 - du
-    zeta1 = 0.0
-    zeta2 = 0.0
-    phi1 = 1.0
-    loss3 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # # Generator 3 - udu
+    # zeta1 = 0.0
+    # zeta2 = 0.0
+    # phi1 = u_pred.unsqueeze(1)
+    # loss3 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
 
     # Generator 4 - xdx + 2tdt
     zeta1 = x
@@ -297,20 +264,21 @@ def symmtery_loss(model, ic, x, t, mu):
     phi1 = 0.0
     loss4 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
 
-    # Generator 5 - 2*mu*t*dx - xu*du
-    zeta1 = 2 * mu * t
-    zeta2 = 0.0
-    phi1 = -x * u_pred
-    loss5 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
-
-    # Generator 6 - too long to type
-    zeta1 = 4 * mu * t * x
-    zeta2 = -4 * mu * t * t
-    phi1 = -(x * x + 2 * mu * t) * u_pred
-    loss6 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # # Generator 5 - 2*mu*t*dx - xu*du
+    # zeta1 = 2 * mu * t
+    # zeta2 = 0.0
+    # phi1 = -x * u_pred.unsqueeze(1)
+    # loss5 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    #
+    # # Generator 6 - too long to type
+    # zeta1 = 4 * mu * t * x
+    # zeta2 = -4 * mu * t * t
+    # phi1 = -(x * x + 2 * mu * t) * u_pred.unsqueeze(1)
+    # loss6 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
 
     # Diffusion equation residual
-    return loss1 + loss2 + loss3 + loss4 + loss5 + loss6
+    # return torch.mean(loss1 + loss2 + loss3 + loss4 + loss5 + loss6)
+    return torch.mean((loss1 + loss2 + loss4) ** 2)
 
 
 def sample_ics(input_tensor, N):
@@ -391,7 +359,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
         )
 
         # Combine losses
-        val_loss = alpha * pinn_loss_val + beta * data_fit_loss_val
+        val_loss = 150 * pinn_loss_val + gamma * data_fit_loss_val
         wandb.log(
             {
                 "val_loss": val_loss,
@@ -402,7 +370,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
         if epoch % 500 == 0:
             print(
                 f"Epoch {epoch}/{epochs}, Total Loss: {total_loss.item():.6f}, "
-                f"PINN Loss: {pinn_loss_value.item():.6f}, Data fit Loss: {data_fit_loss_value.item():.6f}"
+                f"L_pinn: {pinn_loss_value.item():.6f}, L_datafit: {data_fit_loss_value.item():.6f}, L_val: {val_loss.item():.6f}, L_sym: {symmetry_loss_value.item():.6f}"
             )
 
     print("Training complete.")
@@ -450,6 +418,19 @@ def make_plot(
 
 
 if __name__ == "__main__":
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    torch.manual_seed(42)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
+        torch.cuda.manual_seed_all(42)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    wandb.init(project="pinn-symmetry", entity="pinn-symmetry", mode="online")
+
     dataset = (
         "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/heat_new.hdf5"
     )
@@ -466,7 +447,7 @@ if __name__ == "__main__":
     test_data = soln_data[300:500]
 
     model = train(train_data, val_data, test_data, x_data, t_data)
-    torch.save(model.state_dict(), "models/test2.pt")
+    torch.save(model.state_dict(), "models/test_symm_2.pt")
 
     ################################################################
     # branch_input_dim = 200  # For u0(x) - inputs sensor locations
@@ -474,12 +455,17 @@ if __name__ == "__main__":
     # model = DeepONet(branch_input_dim, trunk_input_dim)
     # model = model.to(device)
     #
-    # model.load_state_dict(torch.load("models/test2.pt", weights_only=True))
+    # model.load_state_dict(torch.load("models/test_symm.pt", weights_only=True))
     #
     # make_plot(
-    #     model, train_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="train"
+    #     model,
+    #     train_data,
+    #     x_data,
+    #     t_data,
+    #     [0, 4, 5, 13, 10],
+    #     dataset_name="sym_train",
     # )
     # make_plot(
-    #     model, test_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="test"
+    #     model, test_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="sym_test"
     # )
     # print("Done with plots!")
