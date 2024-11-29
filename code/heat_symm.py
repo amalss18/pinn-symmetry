@@ -125,30 +125,9 @@ def pinn_loss(model, ic, x, t, mu):
     return torch.mean(residual**2)
 
 
-def get_prolongation(zeta1, zeta2, phi1, x, t, u, mu):
-    # Compute partial derivatives
-    u_t = torch.autograd.grad(u, t, grad_outputs=torch.ones_like(u), create_graph=True)[
-        0
-    ]
-    u_x = torch.autograd.grad(u, x, grad_outputs=torch.ones_like(u), create_graph=True)[
-        0
-    ]
-    u_xx = torch.autograd.grad(
-        u_x, x, grad_outputs=torch.ones_like(u_x), create_graph=True
-    )[0]
-    u_tx = torch.autograd.grad(
-        u_x, t, grad_outputs=torch.ones_like(u_x), create_graph=True
-    )[0]
-    u_tt = torch.autograd.grad(
-        u_t, t, grad_outputs=torch.ones_like(u_t), create_graph=True
-    )[0]
-    u_xxx = torch.autograd.grad(
-        u_xx, x, grad_outputs=torch.ones_like(u_xx), create_graph=True
-    )[0]
-    u_xxt = torch.autograd.grad(
-        u_xx, t, grad_outputs=torch.ones_like(u_xx), create_graph=True
-    )[0]
-
+def get_prolongation(
+    zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+):
     # J_delta = torch.tensor(
     #     [
     #         torch.autograd.grad(
@@ -240,45 +219,78 @@ def symmtery_loss(model, ic, x, t, mu):
     # Model prediction
     u_pred = model(ic, x, t)
 
+    # Compute partial derivatives
+    u_t = torch.autograd.grad(
+        u_pred, t, grad_outputs=torch.ones_like(u_pred), create_graph=True
+    )[0]
+    u_x = torch.autograd.grad(
+        u_pred, x, grad_outputs=torch.ones_like(u_pred), create_graph=True
+    )[0]
+    u_xx = torch.autograd.grad(
+        u_x, x, grad_outputs=torch.ones_like(u_x), create_graph=True
+    )[0]
+    u_tx = torch.autograd.grad(
+        u_x, t, grad_outputs=torch.ones_like(u_x), create_graph=True
+    )[0]
+    u_tt = torch.autograd.grad(
+        u_t, t, grad_outputs=torch.ones_like(u_t), create_graph=True
+    )[0]
+    u_xxx = torch.autograd.grad(
+        u_xx, x, grad_outputs=torch.ones_like(u_xx), create_graph=True
+    )[0]
+    u_xxt = torch.autograd.grad(
+        u_xx, t, grad_outputs=torch.ones_like(u_xx), create_graph=True
+    )[0]
+
     # Generator 1 - dx
     zeta1 = 1.0
     zeta2 = 0.0
     phi1 = 0.0
-    loss1 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    loss = get_prolongation(
+        zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    )
 
     # # Generator 2 - dt
-    zeta1 = 0.0
-    zeta2 = 1.0
-    phi1 = 0.0
-    loss2 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # zeta1 = 0.0
+    # zeta2 = 1.0
+    # phi1 = 0.0
+    # loss += get_prolongation(
+    #     zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    # )
 
     # # Generator 3 - udu
     # zeta1 = 0.0
     # zeta2 = 0.0
     # phi1 = u_pred.unsqueeze(1)
-    # loss3 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # loss += get_prolongation(
+    #     zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    # )
 
     # Generator 4 - xdx + 2tdt
     zeta1 = x
     zeta2 = 2 * t
     phi1 = 0.0
-    loss4 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    loss += get_prolongation(
+        zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    )
 
     # # Generator 5 - 2*mu*t*dx - xu*du
     # zeta1 = 2 * mu * t
     # zeta2 = 0.0
     # phi1 = -x * u_pred.unsqueeze(1)
-    # loss5 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # loss += get_prolongation(
+    #     zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    # )
     #
     # # Generator 6 - too long to type
     # zeta1 = 4 * mu * t * x
     # zeta2 = -4 * mu * t * t
     # phi1 = -(x * x + 2 * mu * t) * u_pred.unsqueeze(1)
-    # loss6 = get_prolongation(zeta1, zeta2, phi1, x, t, u_pred, mu)
+    # loss += get_prolongation(
+    #     zeta1, zeta2, phi1, x, t, mu, u_x, u_t, u_xx, u_tx, u_tt, u_xxx, u_xxt
+    # )
 
-    # Diffusion equation residual
-    # return torch.mean(loss1 + loss2 + loss3 + loss4 + loss5 + loss6)
-    return torch.mean((loss1 + loss2 + loss4) ** 2)
+    return torch.mean((loss) ** 2)
 
 
 def sample_ics(input_tensor, N):
@@ -301,7 +313,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
     lr = 1e-4
     branch_input_dim = 200  # For u0(x) - inputs sensor locations
     trunk_input_dim = 2  # For x, t
-    alpha, beta, gamma = 0, 100, 20
+    alpha, beta, gamma = 150, 100, 20
 
     # Initialize the model
     model = DeepONet(branch_input_dim, trunk_input_dim)
