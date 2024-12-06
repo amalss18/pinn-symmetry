@@ -4,7 +4,6 @@ import torch.optim as optim
 import h5py
 import numpy as np
 import wandb
-from torch.utils.data import Dataset
 import argparse
 
 
@@ -88,8 +87,8 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
 
 
 def pinn_loss(model, ic, x, t, mu, Nr):
-    Lx = 6.0
-    Tf = 16.0
+    Lx = 2 * torch.pi
+    Tf = 2.475
     B = ic.shape[0]
 
     x = torch.rand((ic.shape[0], Nr), device=device) * Lx + 1e-6
@@ -121,75 +120,8 @@ def pinn_loss(model, ic, x, t, mu, Nr):
     )[0]
 
     # Diffusion equation residual
-    residual = u_t - mu * u_xx
+    residual = u_t - mu * u_xx + u_pred.unsqueeze(1) * u_x
     return torch.mean(residual**2)
-
-
-def symmtery_loss(model, ic, x, t, mu, Nr):
-    Lx = 6.0
-    Tf = 16.0
-    B = ic.shape[0]
-
-    x = torch.rand((ic.shape[0], Nr), device=device) * Lx + 1e-6
-    t = torch.rand((ic.shape[0], Nr), device=device) * Tf + 1e-6
-
-    x.requires_grad_(True)
-    t.requires_grad_(True)
-
-    ic = ic.unsqueeze(2).repeat(1, 1, Nr).transpose(1, 2)
-    x = x.unsqueeze(2)
-    t = t.unsqueeze(2)
-
-    ic = ic.reshape(B * Nr, -1)
-    x = x.reshape(B * Nr, -1)
-    t = t.reshape(B * Nr, -1)
-
-    # Model prediction
-    u_pred = model(ic, x, t)
-
-    # Compute partial derivatives
-    u_t = torch.autograd.grad(
-        u_pred, t, grad_outputs=torch.ones_like(u_pred), create_graph=True
-    )[0]
-    u_x = torch.autograd.grad(
-        u_pred, x, grad_outputs=torch.ones_like(u_pred), create_graph=True
-    )[0]
-    u_xx = torch.autograd.grad(
-        u_x, x, grad_outputs=torch.ones_like(u_x), create_graph=True
-    )[0]
-    u_tx = torch.autograd.grad(
-        u_x, t, grad_outputs=torch.ones_like(u_x), create_graph=True
-    )[0]
-    u_tt = torch.autograd.grad(
-        u_t, t, grad_outputs=torch.ones_like(u_t), create_graph=True
-    )[0]
-    u_xxx = torch.autograd.grad(
-        u_xx, x, grad_outputs=torch.ones_like(u_xx), create_graph=True
-    )[0]
-    u_xxt = torch.autograd.grad(
-        u_xx, t, grad_outputs=torch.ones_like(u_xx), create_graph=True
-    )[0]
-
-    loss = 0.0
-    # Generator 1 - dx
-    loss = (-mu * u_xxx + u_tx) ** 2
-
-    # # Generator 2 -
-    loss += (u_tt - mu * u_xxt) ** 2
-
-    # Generator 3 - udu
-    # loss += (u_t - mu * u_xx) ** 2
-
-    # Generator 4 - xdx + 2tdt
-    # loss += (-2 * u_t - mu * (-2 * u_xx)) ** 2
-
-    # Generator 5 - 2*mu*t*dx - xu*du
-    loss += (x * (u_t - mu * u_xx)) ** 2
-
-    # Generator 6 - too long to type
-    loss += (-(x**2 + 10 * mu * t) * (u_t - mu * u_xx)) ** 2
-
-    return torch.mean(loss)
 
 
 def sample_ics(input_tensor, N):
@@ -226,42 +158,14 @@ def compute_test_loss(model, data, x, t):
     return loss / data.shape[0]
 
 
-class PINNDataset(Dataset):
-    def __init__(self, x, t, data) -> None:
-        self.x = x
-        self.t = t
-        self.data = data
-        self.ic = self.data[:, 0, :]
-        self.ic_sampled, _ = sample_ics(self.ic, 200)
-        self.grid_x, self.grid_t = torch.meshgrid((x, t))
-        self.grid_x, self.grid_t = self.grid_x.ravel(), self.grid_t.ravel()
-        self.N = self.data.shape[0]
-        self.M = len(self.grid_x)
-
-    def __len__(self):
-        return self.N * self.M
-
-    def __getitem__(self, idx):
-        traj_idx = idx // self.M
-        point_idx = idx % self.M
-        ic = self.ic_sampled[traj_idx]
-        x = self.grid_x[point_idx]
-        t = self.grid_t[point_idx]
-
-        x_idx = point_idx // len(self.t)
-        t_idx = point_idx % len(self.t)
-
-        return ic, x, t, self.data[traj_idx][t_idx][x_idx]
-
-
 def train(train_data, val_data, test_dataloader, x_data, t_data, Nr):
     # Parameters
-    mu = 0.01  # Diffusion coefficient
+    mu = 0.1  # Diffusion coefficient
     epochs = 10000
-    lr = 5e-4
+    lr = 1e-3
     branch_input_dim = 200  # For u0(x) - inputs sensor locations
     trunk_input_dim = 2  # For x, t
-    alpha, beta, gamma = 0.0, 100, 20
+    alpha, beta, gamma = 150.0, 100, 20
 
     # Initialize the model
     model = DeepONet(branch_input_dim, trunk_input_dim)
@@ -284,18 +188,13 @@ def train(train_data, val_data, test_dataloader, x_data, t_data, Nr):
             model, ic_data, ic_data_sampled, x_data, t_data
         )
 
-        symmetry_loss_value = symmtery_loss(
-            model, ic_data_sampled, x_data, t_data, mu, Nr=Nr
-        )
-
         # Combine losses
-        total_loss = gamma * data_fit_loss_value + beta * symmetry_loss_value
+        total_loss = gamma * data_fit_loss_value + alpha * pinn_loss_value
         wandb.log(
             {
                 "pinn_loss": pinn_loss_value,
                 "data_fit_loss": data_fit_loss_value,
                 "ic_loss": ic_loss_value,
-                "symmtery_loss": symmetry_loss_value,
                 "total_loss": total_loss,
                 "epoch": epoch,
             }
@@ -317,7 +216,7 @@ def train(train_data, val_data, test_dataloader, x_data, t_data, Nr):
         )
 
         # Combine losses
-        val_loss = 150 * pinn_loss_val + gamma * data_fit_loss_val
+        val_loss = alpha * pinn_loss_val + gamma * data_fit_loss_val
 
         wandb.log(
             {
@@ -337,7 +236,7 @@ def train(train_data, val_data, test_dataloader, x_data, t_data, Nr):
             )
             print(
                 f"Epoch {epoch}/{epochs}, Total Loss: {total_loss.item():.6f}, "
-                f"L_pinn: {pinn_loss_value.item():.6f}, L_datafit: {data_fit_loss_value.item():.6f}, L_val: {val_loss.item():.6f}, L_sym: {symmetry_loss_value.item():.6f}"
+                f"L_pinn: {pinn_loss_value.item():.6f}, L_datafit: {data_fit_loss_value.item():.6f}, L_val: {val_loss.item():.6f}"
             )
 
     print("Training complete.")
@@ -348,7 +247,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--Nr", type=int, default=200)
+    parser.add_argument("--Nr", type=int, default=500)
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -362,11 +261,15 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
 
     wandb.init(
-        project="pinn-symmetry", entity="pinn-symmetry", mode="online", name=args.name
+        project="pinn-symmetry",
+        entity="pinn-symmetry",
+        mode="online",
+        name=args.name,
+        tags=["burgers"],
     )
 
     dataset = (
-        "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/heat_new.hdf5"
+        "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/burgers.hdf5"
     )
     # Load HDF5 data
     with h5py.File(dataset, "r") as f:
@@ -381,4 +284,4 @@ if __name__ == "__main__":
     test_data = soln_data[300:350]
 
     model = train(train_data, val_data, test_data, x_data, t_data, Nr=args.Nr)
-    torch.save(model.state_dict(), f"models/test_symm_{args.name}.pt")
+    torch.save(model.state_dict(), f"models/burg_{args.name}.pt")

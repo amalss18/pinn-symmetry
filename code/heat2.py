@@ -5,18 +5,7 @@ import h5py
 import numpy as np
 import wandb
 import matplotlib.pyplot as plt
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-wandb.init(project="pinn-symmetry", entity="pinn-symmetry", mode="disabled")
-
-torch.manual_seed(42)
-
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(42)
-    torch.cuda.manual_seed_all(42)
-
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+import argparse
 
 
 class DeepONet(nn.Module):
@@ -98,10 +87,9 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
     ), torch.mean((u_pred_ic - u_actual_ic) ** 2)
 
 
-def pinn_loss(model, ic, x, t, mu):
+def pinn_loss(model, ic, x, t, mu, Nr=300):
     Lx = 6.0
     Tf = 16.0
-    Nr = 300
     B = ic.shape[0]
 
     x = torch.rand((ic.shape[0], Nr), device=device) * Lx + 1e-6
@@ -150,11 +138,32 @@ def sample_ics(input_tensor, N):
     return result, sorted_indices
 
 
-def train(train_data, val_data, test_data, x_data, t_data):
+def compute_test_loss(model, data, x, t):
+    ic_data = data[:, 0, :]
+    ic, _ = sample_ics(ic_data, 200)
+
+    loss = 0.0
+    for d_idx, ic0 in enumerate(ic):
+        grid_x, grid_t = torch.meshgrid((x[::8], t[::8]))
+
+        grid_x, grid_t = grid_x.ravel(), grid_t.ravel()
+        ic0 = ic0.unsqueeze(-1).repeat(1, len(grid_x)).transpose(0, 1)
+        grid_x, grid_t = grid_x.unsqueeze(-1), grid_t.unsqueeze(-1)
+
+        output = model(ic0, grid_x, grid_t)
+        output = output.reshape((len(x[::8]), len(t[::8]))).transpose(0, 1)
+
+        true_output = data[d_idx]
+        loss += torch.mean((output - true_output[::8, ::8]) ** 2)
+
+    return loss / data.shape[0]
+
+
+def train(train_data, val_data, test_data, x_data, t_data, Nr=300):
     # Parameters
     mu = 0.01  # Diffusion coefficient
-    epochs = 5000
-    lr = 1e-4
+    epochs = 10000
+    lr = 1e-3
     branch_input_dim = 200  # For u0(x) - inputs sensor locations
     trunk_input_dim = 2  # For x, t
     alpha, beta = 150, 20
@@ -173,7 +182,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
         optimizer.zero_grad()
 
         # Physics-Informed Loss
-        pinn_loss_value = pinn_loss(model, ic_data_sampled, x_data, t_data, mu)
+        pinn_loss_value = pinn_loss(model, ic_data_sampled, x_data, t_data, mu, Nr=Nr)
 
         # Supervised Loss
         data_fit_loss_value, ic_loss_value = data_fit_loss(
@@ -200,7 +209,7 @@ def train(train_data, val_data, test_data, x_data, t_data):
 
         ic_data_val = val_data[:, 0, :]
         ic_data_val_sampled, _ = sample_ics(ic_data_val, branch_input_dim)
-        pinn_loss_val = pinn_loss(model, ic_data_val_sampled, x_data, t_data, mu)
+        pinn_loss_val = pinn_loss(model, ic_data_val_sampled, x_data, t_data, mu, Nr)
 
         # Supervised Loss
         data_fit_loss_val, ic_loss_val = data_fit_loss(
@@ -217,6 +226,14 @@ def train(train_data, val_data, test_data, x_data, t_data):
         )
 
         if epoch % 500 == 0:
+            test_loss = compute_test_loss(model, test_data, x_data, t_data)
+            print(f"Epoch {epoch}/{epochs}, Test Loss: {test_loss.item():.6f}")
+            wandb.log(
+                {
+                    "test_loss": test_loss,
+                    "epoch": epoch,
+                }
+            )
             print(
                 f"Epoch {epoch}/{epochs}, Total Loss: {total_loss.item():.6f}, "
                 f"PINN Loss: {pinn_loss_value.item():.6f}, Data fit Loss: {data_fit_loss_value.item():.6f}"
@@ -226,47 +243,26 @@ def train(train_data, val_data, test_data, x_data, t_data):
     return model
 
 
-def make_plot(
-    model, data, x, t, p_idxs=[0], dataset_name="train", branch_input_dim=200
-):
-    ic_data = data[:, 0, :]
-    ic_data_sampled, _ = sample_ics(ic_data, branch_input_dim)
-
-    for p_idx in p_idxs:
-        ic0 = ic_data_sampled[p_idx]
-        grid_x, grid_t = torch.meshgrid((x, t))
-
-        grid_x, grid_t = grid_x.ravel(), grid_t.ravel()
-        ic0 = ic0.unsqueeze(-1).repeat(1, len(grid_x)).transpose(0, 1)
-        grid_x, grid_t = grid_x.unsqueeze(-1), grid_t.unsqueeze(-1)
-
-        output = model(ic0, grid_x, grid_t)
-        output = output.reshape((len(x), len(t))).transpose(0, 1)
-
-        fig, axs = plt.subplots(2, 1)
-        axs[0].pcolormesh(
-            x.cpu(),
-            t.cpu(),
-            output.detach().cpu(),
-            cmap="RdBu_r",
-            shading="gouraud",
-            rasterized=True,
-            clim=(-0.8, 0.8),
-        )
-        axs[1].pcolormesh(
-            x.cpu(),
-            t.cpu(),
-            data[p_idx].detach().cpu(),
-            cmap="RdBu_r",
-            shading="gouraud",
-            rasterized=True,
-            clim=(-0.8, 0.8),
-        )
-        plt.savefig(f"plots/{dataset_name}_{p_idx}.pdf")
-        plt.clf()
-
-
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--name", type=str)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--Nr", type=int, default=500)
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wandb.init(
+        project="pinn-symmetry", entity="pinn-symmetry", mode="online", name=args.name
+    )
+
+    torch.manual_seed(42)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     dataset = (
         "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/heat_new.hdf5"
     )
@@ -280,23 +276,7 @@ if __name__ == "__main__":
 
     train_data = soln_data[:200]
     val_data = soln_data[200:300]
-    test_data = soln_data[300:500]
+    test_data = soln_data[300:350]
 
-    model = train(train_data, val_data, test_data, x_data, t_data)
-    torch.save(model.state_dict(), "models/test2.pt")
-
-    ################################################################
-    # branch_input_dim = 200  # For u0(x) - inputs sensor locations
-    # trunk_input_dim = 2  # For x, t
-    # model = DeepONet(branch_input_dim, trunk_input_dim)
-    # model = model.to(device)
-    #
-    # model.load_state_dict(torch.load("models/test2.pt", weights_only=True))
-    #
-    # make_plot(
-    #     model, train_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="train"
-    # )
-    # make_plot(
-    #     model, test_data, x_data, t_data, [0, 40, 59, 131, 100], dataset_name="test"
-    # )
-    # print("Done with plots!")
+    model = train(train_data, val_data, test_data, x_data, t_data, Nr=args.Nr)
+    torch.save(model.state_dict(), f"models/heat_{args.name}.pt")

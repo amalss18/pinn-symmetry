@@ -3,7 +3,7 @@ import h5py
 import numpy as np
 import matplotlib.pyplot as plt
 import wandb
-from heat_symm import DeepONet, sample_ics
+from heat_symm import DeepONet
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 wandb.init(project="pinn-symmetry", entity="pinn-symmetry", mode="disabled")
@@ -16,6 +16,19 @@ if torch.cuda.is_available():
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
+
+
+def sample_ics(input_tensor, N):
+    # TODO: Don't repeat sensor points
+    batch_size, num_columns = input_tensor.shape
+    random_indices = torch.randint(0, num_columns, (batch_size, N), device=device)
+
+    # Sort the random indices along the last dimension
+    sorted_indices, _ = torch.sort(random_indices, dim=1)
+
+    # Use advanced indexing to gather the sampled values
+    result = torch.gather(input_tensor, 1, sorted_indices)
+    return result, sorted_indices
 
 
 def make_plot(
@@ -38,7 +51,7 @@ def make_plot(
         output_sym = model_sym(ic0, grid_x, grid_t)
         output_sym = output_sym.reshape((len(x), len(t))).transpose(0, 1)
 
-        fig, axs = plt.subplots(3, 1)
+        fig, axs = plt.subplots(3, 1, figsize=(16, 9))
         axs[0].pcolormesh(
             x.cpu(),
             t.cpu(),
@@ -95,11 +108,13 @@ if __name__ == "__main__":
 
     model = DeepONet(branch_input_dim, trunk_input_dim)
     model = model.to(device)
-    model.load_state_dict(torch.load("models/test2.pt", weights_only=True))
+    model.load_state_dict(torch.load("models/heat_pinn_baseline.pt", weights_only=True))
 
     model_sym = DeepONet(branch_input_dim, trunk_input_dim)
     model_sym = model_sym.to(device)
-    model_sym.load_state_dict(torch.load("models/test_symm_2.pt", weights_only=True))
+    model_sym.load_state_dict(
+        torch.load("models/test_symm_symm_baseline.pt", weights_only=True)
+    )
 
     make_plot(
         model,

@@ -4,3 +4,6 @@ code/plots/*
 code/models/*
 code/wandb/*
 code/__pycache__/*
+code/*.sh
+data/test.pdf
+codde/slurm/*

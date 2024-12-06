@@ -4,7 +4,6 @@ import torch.optim as optim
 import h5py
 import numpy as np
 import wandb
-from torch.utils.data import Dataset
 import argparse
 
 
@@ -88,8 +87,8 @@ def data_fit_loss(model, ic, ic_sampled, x_data, t_data):
 
 
 def pinn_loss(model, ic, x, t, mu, Nr):
-    Lx = 6.0
-    Tf = 16.0
+    Lx = 2 * torch.pi
+    Tf = 2.475
     B = ic.shape[0]
 
     x = torch.rand((ic.shape[0], Nr), device=device) * Lx + 1e-6
@@ -121,13 +120,13 @@ def pinn_loss(model, ic, x, t, mu, Nr):
     )[0]
 
     # Diffusion equation residual
-    residual = u_t - mu * u_xx
+    residual = u_t - mu * u_xx + u_pred.unsqueeze(1) * u_x
     return torch.mean(residual**2)
 
 
 def symmtery_loss(model, ic, x, t, mu, Nr):
-    Lx = 6.0
-    Tf = 16.0
+    Lx = 2 * torch.pi
+    Tf = 2.475
     B = ic.shape[0]
 
     x = torch.rand((ic.shape[0], Nr), device=device) * Lx + 1e-6
@@ -172,22 +171,16 @@ def symmtery_loss(model, ic, x, t, mu, Nr):
 
     loss = 0.0
     # Generator 1 - dx
-    loss = (-mu * u_xxx + u_tx) ** 2
+    loss = (u_tx + u_x * u_x + u_pred.unsqueeze(1) * u_xx - mu * u_xxx) ** 2
 
-    # # Generator 2 -
-    loss += (u_tt - mu * u_xxt) ** 2
+    # # Generator 2 - dt
+    loss += (u_tt + u_t * u_x + u_pred.unsqueeze(1) * u_tx - mu * u_xxt) ** 2
 
-    # Generator 3 - udu
-    # loss += (u_t - mu * u_xx) ** 2
+    # Generator 4 - x*dx + 2tdt - u*du
+    loss += (-3 * (u_t + u_pred.unsqueeze(1) * u_x - mu * u_xx)) ** 2
 
-    # Generator 4 - xdx + 2tdt
-    # loss += (-2 * u_t - mu * (-2 * u_xx)) ** 2
-
-    # Generator 5 - 2*mu*t*dx - xu*du
-    loss += (x * (u_t - mu * u_xx)) ** 2
-
-    # Generator 6 - too long to type
-    loss += (-(x**2 + 10 * mu * t) * (u_t - mu * u_xx)) ** 2
+    # Generator 5 - too long to type
+    loss += (-3 * t * (u_t + u_pred.unsqueeze(1) * u_x - mu * u_xx)) ** 2
 
     return torch.mean(loss)
 
@@ -226,39 +219,11 @@ def compute_test_loss(model, data, x, t):
     return loss / data.shape[0]
 
 
-class PINNDataset(Dataset):
-    def __init__(self, x, t, data) -> None:
-        self.x = x
-        self.t = t
-        self.data = data
-        self.ic = self.data[:, 0, :]
-        self.ic_sampled, _ = sample_ics(self.ic, 200)
-        self.grid_x, self.grid_t = torch.meshgrid((x, t))
-        self.grid_x, self.grid_t = self.grid_x.ravel(), self.grid_t.ravel()
-        self.N = self.data.shape[0]
-        self.M = len(self.grid_x)
-
-    def __len__(self):
-        return self.N * self.M
-
-    def __getitem__(self, idx):
-        traj_idx = idx // self.M
-        point_idx = idx % self.M
-        ic = self.ic_sampled[traj_idx]
-        x = self.grid_x[point_idx]
-        t = self.grid_t[point_idx]
-
-        x_idx = point_idx // len(self.t)
-        t_idx = point_idx % len(self.t)
-
-        return ic, x, t, self.data[traj_idx][t_idx][x_idx]
-
-
 def train(train_data, val_data, test_dataloader, x_data, t_data, Nr):
     # Parameters
-    mu = 0.01  # Diffusion coefficient
+    mu = 0.1  # Diffusion coefficient
     epochs = 10000
-    lr = 5e-4
+    lr = 1e-3
     branch_input_dim = 200  # For u0(x) - inputs sensor locations
     trunk_input_dim = 2  # For x, t
     alpha, beta, gamma = 0.0, 100, 20
@@ -348,7 +313,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--name", type=str)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--Nr", type=int, default=200)
+    parser.add_argument("--Nr", type=int, default=500)
     args = parser.parse_args()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -362,11 +327,15 @@ if __name__ == "__main__":
     torch.backends.cudnn.benchmark = False
 
     wandb.init(
-        project="pinn-symmetry", entity="pinn-symmetry", mode="online", name=args.name
+        project="pinn-symmetry",
+        entity="pinn-symmetry",
+        mode="online",
+        name=args.name,
+        tags=["burgers"],
     )
 
     dataset = (
-        "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/heat_new.hdf5"
+        "/scratch/venkvis_root/venkvis/shared_data/symmetry/data/dataset/burgers.hdf5"
     )
     # Load HDF5 data
     with h5py.File(dataset, "r") as f:
@@ -381,4 +350,4 @@ if __name__ == "__main__":
     test_data = soln_data[300:350]
 
     model = train(train_data, val_data, test_data, x_data, t_data, Nr=args.Nr)
-    torch.save(model.state_dict(), f"models/test_symm_{args.name}.pt")
+    torch.save(model.state_dict(), f"models/symm_burg_{args.name}.pt")
